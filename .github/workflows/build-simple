@@ -1,0 +1,76 @@
+name: Build Simple Linux Static
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch: # 允许手动点击按钮触发
+
+jobs:
+  build-static:
+    name: Build Linux x64 Static (No TTS)
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build in Docker (Manylinux 2014)
+        uses: addnab/docker-run-action@v3
+        with:
+            # 使用官方推荐的 manylinux 镜像，确保兼容所有 Linux 发行版
+            image: quay.io/pypa/manylinux2014_x86_64
+            options: |
+              --volume ${{ github.workspace }}/:/home/runner/work/sherpa-onnx/sherpa-onnx
+            shell: bash
+            run: |
+              # 1. 准备环境
+              cd /home/runner/work/sherpa-onnx/sherpa-onnx
+              
+              # 2. 编译 ALSA (音频依赖库，必须要有)
+              echo ">>> Building ALSA..."
+              git clone --depth 1 --branch v1.2.12 https://github.com/alsa-project/alsa-lib
+              cd alsa-lib
+              ./gitcompile
+              cd ..
+
+              # 3. 配置 Sherpa-onnx
+              echo ">>> Configuring CMake..."
+              mkdir build
+              cd build
+              
+              cmake \
+                -DALSA_INCLUDE_DIR=$PWD/../alsa-lib/include \
+                -DALSA_LIBRARY=$PWD/../alsa-lib/src/.libs/libasound.so \
+                -D SHERPA_ONNX_ENABLE_TTS=OFF \
+                -D CMAKE_BUILD_TYPE=Release \
+                -D BUILD_SHARED_LIBS=OFF \
+                -D CMAKE_INSTALL_PREFIX=./install \
+                ..
+
+              # 4. 开始编译 (2个核心并行)
+              echo ">>> Compiling..."
+              make -j2
+              make install
+
+              # 5. 瘦身 (去除调试符号，减小体积)
+              echo ">>> Stripping binaries..."
+              strip install/bin/*
+
+      - name: Package artifacts
+        run: |
+          # 创建一个干净的文件夹用来打包
+          mkdir -p sherpa-onnx-linux-x64-static
+          
+          # 只复制 bin 目录 (可执行文件)
+          cp -r build/install/bin/* sherpa-onnx-linux-x64-static/
+          
+          # 也可以选复制 include 头文件，如果不需要开发只运行，这行可以注释掉
+          # cp -r build/install/include sherpa-onnx-linux-x64-static/
+
+          # 显示一下文件列表，确保东西在里面
+          ls -lh sherpa-onnx-linux-x64-static/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          # 这就是你最后在 Artifacts 列表里看到的名字
+          name: sherpa-onnx-linux-x64-static
+          path: sherpa-onnx-linux-x64-static/
